@@ -73,6 +73,16 @@ class NoDelete(Base):
         self.assertAllowed("cd .. && rm y", cwd="/tmp/a/b")                           # relative cd from the session folder
         self.assertBlocked("cd ../.. && rm y", cwd=self.home + "/a")
 
+    def test_redirections_are_not_delete_targets(self):
+        for c in ["rm -rf ~/proj/build 2>/dev/null", "rm /tmp/x 2>&1", "rm -f /tmp/x >/dev/null 2>&1", "rm -f /tmp/x &>/dev/null",
+                  "rm -rf /tmp/x > /tmp/log", "rmdir /tmp/x 2> /dev/null", "rm -rf node_modules >> /tmp/out.txt 2>&1",
+                  "bash -c 'rm /tmp/x 2>/dev/null'", "cd /tmp/x && rm y 2>/dev/null"]:
+            with self.subTest(c): self.assertAllowed(c)
+        self.assertAllowed("rm -rf build 2>/dev/null", cwd=self.home + "/proj")
+        for c in ["rm ~/Documents/x 2>/dev/null", "rm ~/x >/dev/null 2>&1", "rm ~/x > /tmp/log", "rm -rf ~/Desktop/y 2>&1 | cat",
+                  "rm /tmp/ok ~/Documents/no 2>/dev/null", "rm 2>/dev/null ~/Documents/x"]:
+            with self.subTest(c): self.assertBlocked(c)
+
     def test_allows_things_that_are_not_deletes(self):
         for c in ["git rm old.py", "git rm -r --cached dist", "mv ~/x ~/.Trash/", "ls -la", "echo rm -rf ~/x", "git clean -n", "git clean -nd",
                   "grep -r 'rm -rf' .", "cat <<'EOF'\nrm -rf ~/Documents\nEOF", "python3 build.py", "pytest -q", "npm run build"]:

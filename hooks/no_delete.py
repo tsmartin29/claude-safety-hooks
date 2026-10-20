@@ -46,6 +46,18 @@ def strip_prefix(seg):
         break
     return seg[i:]
 
+REDIRECT = re.compile(r"^[<>&]*[<>][<>&]*$")   # >, >>, <, >&, &>, 2>&1 once the fd digit is split off
+
+def strip_redirects(args):
+    """Drop shell redirections (`2>/dev/null`, `> log`, `>&2`) and their targets: they are not arguments of the command."""
+    out, i = [], 0
+    while i < len(args):
+        if REDIRECT.match(args[i]):
+            if out and out[-1] in ("0", "1", "2"): out.pop()   # the fd number written in front: 2>/dev/null
+            i += 2; continue
+        out.append(args[i]); i += 1
+    return out
+
 def cd_dirs(name, args, dirs):
     """Folders the shell may be in after `cd`/`pushd` ARGS, one per folder in DIRS. None = cannot tell."""
     rest, opts = [], True
@@ -84,7 +96,7 @@ def analyse(cmd, cwd, cfg, depth=0, dirs=None):
         prev = sep
         seg = strip_prefix(seg)
         if not seg: continue
-        name = os.path.basename(seg[0]); args = seg[1:]
+        name = os.path.basename(seg[0]); args = strip_redirects(seg[1:])
         if name in ("cd", "pushd", "popd"):
             dirs = [None] if name == "popd" else cd_dirs(name, args, dirs)
             seen += [d for d in dirs if d not in seen]
