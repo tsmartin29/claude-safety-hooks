@@ -8,7 +8,7 @@ Exit 2 + message on stderr = block (Claude sees the message). Any internal error
 """
 import os, re, shlex, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import load_config, read_input, norm, matches_any, fail_open
+from common import load_config, read_input, expand, norm, matches_any, fail_open
 
 DELETERS = {"rm", "unlink", "rmdir", "shred"}
 WRAPPERS = {"sudo", "command", "builtin", "exec", "nice", "nohup", "time", "env", "doas", "caffeinate"}
@@ -24,13 +24,14 @@ def tokenize(cmd):
         return cmd.split()
 
 def segments(tokens):
+    """Yield (words, separator after them); the separator is None at the end."""
     seg = []
     for t in tokens:
         if t in SEPARATORS or (t and set(t) <= set(";&|()")):
-            if seg: yield seg
+            if seg: yield seg, t
             seg = []
         else: seg.append(t)
-    if seg: yield seg
+    if seg: yield seg, None
 
 def strip_prefix(seg):
     """Drop VAR=value words and wrapper commands (sudo, nice -n 5, env X=1 ...) from the front."""
@@ -45,22 +46,48 @@ def strip_prefix(seg):
         break
     return seg[i:]
 
-def analyse(cmd, cwd, cfg, depth=0):
-    """Return a list of (path, reason) that would be deleted outside the allowlist."""
+def cd_dirs(name, args, dirs):
+    """Folders the shell may be in after `cd`/`pushd` ARGS, one per folder in DIRS. None = cannot tell."""
+    rest, opts = [], True
+    for a in args:
+        if opts and a == "--": opts = False; continue
+        if opts and re.match(r"^-[A-Za-z@]+$", a): continue
+        rest.append(a)
+    if not rest: return [os.path.expanduser("~")] if name == "cd" else [None]   # bare pushd swaps the stack
+    t = rest[0]
+    if len(rest) > 1 or t == "-" or re.match(r"^[+-]\d+$", t) or "$" in expand(t) or "`" in t: return [None]
+    if os.path.isabs(expand(t)): return [norm(t)]
+    if os.environ.get("CDPATH") and not t.startswith(("./", "../")) and t not in (".", ".."): return [None]
+    return [norm(t, d) if d else None for d in dirs]
+
+def analyse(cmd, cwd, cfg, depth=0, dirs=None):
+    """Return a list of (path, reason) that would be deleted outside the allowlist.
+    Relative paths are checked against every folder the shell may be in: a `cd` replaces the folder only along an
+    `&&` chain (a failed cd leaves the shell where it was); after ; || | & or a subshell any earlier folder is possible."""
     bad = []
     if depth > 3: return bad
     allow = cfg["no_delete"]["allow_paths"]
     trash = os.path.expanduser("~/.Trash")
+    dirs = dirs or [cwd or os.getcwd()]
+    seen, prev = list(dirs), "&&"
     def check(raw):
-        if "$" in os.path.expandvars(os.path.expanduser(raw)) or "`" in raw:
+        if "$" in expand(raw) or "`" in raw:
             bad.append((raw, "path uses a variable or substitution I cannot verify")); return
-        p = norm(raw, cwd)
-        if p == trash or p.startswith(trash + "/") or matches_any(p, allow): return
-        bad.append((p, "outside the temp/build allowlist"))
-    for seg in segments(tokenize(cmd)):
+        for d in ([None] if os.path.isabs(expand(raw)) else dict.fromkeys(dirs)):
+            if d is None and not os.path.isabs(expand(raw)):
+                bad.append((raw, "relative path after a cd whose folder I cannot verify")); continue
+            p = norm(raw, d)
+            if p == trash or p.startswith(trash + "/") or matches_any(p, allow): continue
+            bad.append((p, "outside the temp/build allowlist"))
+    for seg, sep in segments(tokenize(cmd)):
+        if prev != "&&": dirs = list(seen)
+        prev = sep
         seg = strip_prefix(seg)
         if not seg: continue
         name = os.path.basename(seg[0]); args = seg[1:]
+        if name in ("cd", "pushd", "popd"):
+            dirs = [None] if name == "popd" else cd_dirs(name, args, dirs)
+            seen += [d for d in dirs if d not in seen]
         if name in DELETERS:
             end_opts, targets = False, []
             for a in args:
@@ -83,7 +110,7 @@ def analyse(cmd, cwd, cfg, depth=0):
                 bad.append(("(paths come from stdin)", "xargs rm: I cannot see which files"))
         elif name in ("bash", "sh", "zsh", "dash", "ksh") and "-c" in args:
             i = args.index("-c")
-            if i + 1 < len(args): bad += analyse(args[i + 1], cwd, cfg, depth + 1)
+            if i + 1 < len(args): bad += analyse(args[i + 1], cwd, cfg, depth + 1, list(dirs))
         elif name == "git" and cfg["no_delete"].get("block_git_clean", True):
             sub = [a for a in args if not a.startswith("-")][:1]
             flags = [a for a in args if a.startswith("-")]

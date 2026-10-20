@@ -60,6 +60,19 @@ class NoDelete(Base):
         self.assertAllowed("rm -rf build", cwd=self.home + "/proj")         # relative path resolved against cwd
         self.assertAllowed('rm -rf "$HOME/proj/build"')
 
+    def test_follows_cd_in_the_same_command(self):
+        for c in ["cd /tmp/x && rm y", "cd /private/tmp/x && rm file.html", "cd /tmp && cd x && rm -rf y", "pushd /tmp/x && rm y",
+                  "cd -P /tmp/x && rm y", "cd ~/proj && rm -rf build", "cd /tmp/x &&\nrm y", "(cd /tmp/x && rm y)",
+                  "cd $SOMEWHERE && rm /tmp/y", "bash -c 'cd /tmp/x && rm y'", "cd /tmp/x && bash -c 'rm y'"]:
+            with self.subTest(c): self.assertAllowed(c)
+        for c in ["cd ~/Documents && rm y", "cd /tmp/x && cd ~/Documents && rm y", "cd ~ && rm -rf Documents", "cd && rm y",
+                  "cd /tmp/x; rm y", "cd /tmp/x || rm y", "(cd /tmp/x) && rm y", "cd /tmp/x | rm y", "cd /tmp/x & rm y",
+                  "cd /tmp/x && true; rm y", "cd $SOMEWHERE && rm y", "cd `pwd`/x && rm y", "cd - && rm y",
+                  "pushd /tmp/x && popd && rm y", "cd /tmp/x && rm ../../Users/someone/y", "cd /tmp && cd ~ && find . -delete"]:
+            with self.subTest(c): self.assertBlocked(c)
+        self.assertAllowed("cd .. && rm y", cwd="/tmp/a/b")                           # relative cd from the session folder
+        self.assertBlocked("cd ../.. && rm y", cwd=self.home + "/a")
+
     def test_allows_things_that_are_not_deletes(self):
         for c in ["git rm old.py", "git rm -r --cached dist", "mv ~/x ~/.Trash/", "ls -la", "echo rm -rf ~/x", "git clean -n", "git clean -nd",
                   "grep -r 'rm -rf' .", "cat <<'EOF'\nrm -rf ~/Documents\nEOF", "python3 build.py", "pytest -q", "npm run build"]:
