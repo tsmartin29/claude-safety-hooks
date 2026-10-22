@@ -11,6 +11,7 @@ When you run many Claude Code sessions, even a 0.1 % chance of a bad `rm -rf` pe
 | Hook | Event | What it does |
 |---|---|---|
 | `no_delete.py` | PreToolUse (Bash) | Blocks `rm`, `unlink`, `rmdir`, `shred`, `find -delete`, `find -exec rm`, `xargs rm`, `git clean -f`, also inside `bash -c`. Tells Claude: *Move it to ~/.Trash instead (mv <path> ~/.Trash/)*. Deleting is allowed in temp and build areas (`/tmp`, `node_modules`, `build/`, `.venv`, `__pycache__`, `DerivedData`, `*.o`, ... and anything already in `~/.Trash`). `git rm` is not blocked. |
+| `no_mass_kill.py` | PreToolUse (Bash) | Blocks "signal everything I own" commands: `kill -9 -1`, `kill 0`, `pkill -u <you>`, `killall -u`, match-everything patterns like `pkill -f .`, and inline `os.kill(-1, ...)` / `os.killpg(0, ...)` / `process.kill(-1)` run with `python -c` / `node -e` / `perl -e`, also inside `bash -c`. One of those from an agent takes down every other session, the terminal and the desktop ([anthropics/claude-code#104156](https://github.com/anthropics/claude-code/issues/104156)). Killing specific PIDs, or a process group you started (`kill -- -12345`), is allowed. |
 | `backup_before_write.py` | PreToolUse (Write / Edit / MultiEdit / NotebookEdit) | If the file exists and matches your protected globs, copies it to `name.YYYY-MM-DD_before_<tool>.bak` first. Only the first change each day is backed up. Never blocks the edit: if the copy fails it warns and carries on. About 30-70 ms. |
 | `test_before_done.py` | Stop | If Claude changed files this turn, claims it is done/fixed/built, and ran nothing that looks like a test or a try-it (test command, build check, browser/simulator tool), it gets one reminder to test like a user. At most once per turn, never loops (honours `stop_hook_active`). |
 
@@ -36,7 +37,8 @@ The snippet it produces:
 {
   "hooks": {
     "PreToolUse": [
-      {"matcher": "Bash", "hooks": [{"type": "command", "command": "/usr/bin/python3 ~/.claude/safety-hooks/no_delete.py"}]},
+      {"matcher": "Bash", "hooks": [{"type": "command", "command": "/usr/bin/python3 ~/.claude/safety-hooks/no_delete.py"},
+                                    {"type": "command", "command": "/usr/bin/python3 ~/.claude/safety-hooks/no_mass_kill.py"}]},
       {"matcher": "Write|Edit|MultiEdit|NotebookEdit", "hooks": [{"type": "command", "command": "/usr/bin/python3 ~/.claude/safety-hooks/backup_before_write.py"}]}
     ],
     "Stop": [
@@ -65,6 +67,7 @@ Patterns are shell-style (`fnmatch`) against the absolute path; `*` also matches
 ## How it behaves, honestly
 
 - `no_delete` reads the command text. It handles quotes, `&&`/`;`/pipes, `sudo`/`env`/`nice`, `bash -c '...'`, heredocs, relative paths, `~`, `$HOME`, and `..` tricks. A path with a variable it cannot resolve (`rm -rf $SOMETHING/x`) is blocked. It does **not** catch deletes hidden inside a script, `python -c "shutil.rmtree(...)"`, `rsync --delete`, or `mv x /dev/null`. It is a seatbelt, not a sandbox.
+- `no_mass_kill` reads the command text the same way. It does not see a `kill(-1, ...)` inside a script file the command runs, and it ignores text that only mentions one (heredocs, echo, grep, commit messages); it catches the shell forms and inline `-c`/`-e` code.
 - The Stop reminder is a heuristic on words and commands. It will miss some false "done" claims and will occasionally nudge when you already tested in a way it does not recognise; edit the patterns at the top of `hooks/test_before_done.py` to suit you.
 - Backups are same-folder copies. They are not version control.
 
