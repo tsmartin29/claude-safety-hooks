@@ -106,6 +106,41 @@ class NoDelete(Base):
         open(self.home + "/cfg.json", "w").write("{broken")     # unreadable config -> defaults still protect
         self.assertBlocked("rm -rf ~/Documents")
 
+class NoMassKill(Base):
+    """anthropics/claude-code#104156: kill(-1, SIGKILL) from an agent's script took down every session and the desktop."""
+    def bash(self, cmd):
+        return self.run_hook("no_mass_kill.py", {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": self.home})
+    def assertBlocked(self, cmd):
+        r = self.bash(cmd); self.assertEqual(r.returncode, 2, f"should block: {cmd}\n{r.stderr}"); self.assertIn("every process you own", r.stderr)
+    def assertAllowed(self, cmd):
+        r = self.bash(cmd); self.assertEqual(r.returncode, 0, f"should allow: {cmd}\n{r.stderr}")
+    def test_blocks_kill_minus_one_and_zero(self):
+        for c in ["kill -9 -1", "kill -KILL -1", "kill -s KILL -1", "kill -- -1", "kill 0", "kill -TERM 0", "sudo kill -9 -1",
+                  "cd /tmp && kill -9 -1", "sleep 1; kill -1 -1", "bash -c 'kill -9 -1'", "zsh -c \"kill 0\""]:
+            self.assertBlocked(c)
+    def test_blocks_user_wide_and_match_all(self):
+        for c in ["pkill -u tommy", "pkill -9 -U 501", "killall -u tommy", "pkill --euid=501", "pkill -f .", "pkill '.*'", "killall -m '.*'"]:
+            self.assertBlocked(c)
+    def test_blocks_inline_code(self):
+        for c in ["python3 -c 'import os,signal; os.kill(-1, signal.SIGKILL)'", "python3 -c 'import os; os.killpg(0, 9)'",
+                  "node -e 'process.kill(-1)'", "perl -e 'kill(-1, 9)'"]:
+            self.assertBlocked(c)
+    def test_allows_specific_targets(self):
+        for c in ["kill 12345", "kill -9 12345 23456", "kill -- -12345", "kill -TERM %1", "kill -l", "kill -0 4242",
+                  "pkill -f my_server.py", "killall Finder", "pgrep -u tommy python", "pkill -9 -f 'node dev'",
+                  "python3 -c 'import os; os.kill(4242, 15)'", "echo kill -9 -1 is dangerous > notes.txt"]:
+            self.assertAllowed(c)
+    def test_text_that_only_mentions_it_is_allowed(self):
+        # found the first time the hook ran for real: a README edit quoting os.kill(-1, ...) was blocked
+        for c in ["python3 - <<'EOF'\nopen('README.md','a').write('inline os.kill(-1, ...) is blocked')\nEOF",
+                  "echo 'never run os.kill(-1, 9)' >> notes.md", "grep -rn 'killpg(0' src/", "git commit -m 'block kill -9 -1'"]:
+            self.assertAllowed(c)
+    def test_can_be_disabled(self):
+        self.write_config({"no_mass_kill": {"enabled": False}}); self.assertAllowed("kill -9 -1")
+    def test_ignores_other_tools_and_bad_input(self):
+        r = self.run_hook("no_mass_kill.py", {"tool_name": "Write", "tool_input": {"command": "kill -9 -1"}}); self.assertEqual(r.returncode, 0)
+        r = self.run_hook("no_mass_kill.py", None, raw="not json"); self.assertEqual(r.returncode, 0)
+
 class Backup(Base):
     def setUp(self):
         super().setUp()
