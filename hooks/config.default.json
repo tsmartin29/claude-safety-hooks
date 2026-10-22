@@ -2,22 +2,63 @@
   "no_delete": {
     "enabled": true,
     "allow_paths": [
-      "/tmp/*", "/private/tmp/*", "/private/var/folders/*", "/var/folders/*",
-      "*/scratchpad/*", "*/build/*", "*/build_*/*", "*/_build/*",
-      "*/node_modules/*", "*/.venv/*", "*/venv/*", "*/__pycache__/*", "*/.pytest_cache/*",
-      "*/CMakeFiles/*", "*/DerivedData/*", "*.o",
+      "/tmp/*",
+      "/private/tmp/*",
+      "/private/var/folders/*",
+      "/var/folders/*",
+      "*/scratchpad/*",
+      "*/build/*",
+      "*/build_*/*",
+      "*/_build/*",
+      "*/node_modules/*",
+      "*/.venv/*",
+      "*/venv/*",
+      "*/__pycache__/*",
+      "*/.pytest_cache/*",
+      "*/CMakeFiles/*",
+      "*/DerivedData/*",
+      "*.o",
       "~/.Trash/*"
     ],
     "block_git_clean": true
+  },
+  "no_mass_kill": {
+    "enabled": true
   },
   "backup": {
     "enabled": true,
     "max_file_mb": 20,
     "rules": [
       {
-        "roots": ["~/code", "~/projects"],
-        "globs": ["*.py", "*.js", "*.mjs", "*.ts", "*.tsx", "*.html", "*.css", "*.swift", "*.cpp", "*.h", "*.json", "*.md", "CMakeLists.txt"],
-        "exclude": ["*/build/*", "*/build_*/*", "*/dist/*", "*/node_modules/*", "*/.venv/*", "*/venv/*", "*/.git/*", "*/__pycache__/*"]
+        "roots": [
+          "~/code",
+          "~/projects"
+        ],
+        "globs": [
+          "*.py",
+          "*.js",
+          "*.mjs",
+          "*.ts",
+          "*.tsx",
+          "*.html",
+          "*.css",
+          "*.swift",
+          "*.cpp",
+          "*.h",
+          "*.json",
+          "*.md",
+          "CMakeLists.txt"
+        ],
+        "exclude": [
+          "*/build/*",
+          "*/build_*/*",
+          "*/dist/*",
+          "*/node_modules/*",
+          "*/.venv/*",
+          "*/venv/*",
+          "*/.git/*",
+          "*/__pycache__/*"
+        ]
       }
     ]
   },

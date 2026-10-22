@@ -17,7 +17,7 @@ import json, sys
 py, dest = sys.argv[1:3]
 cmd = lambda f: {"type": "command", "command": f"{py} {dest}/{f}"}
 print(json.dumps({"hooks": {
-  "PreToolUse": [{"matcher": "Bash", "hooks": [cmd("no_delete.py")]},
+  "PreToolUse": [{"matcher": "Bash", "hooks": [cmd("no_delete.py"), cmd("no_mass_kill.py")]},
                  {"matcher": "Write|Edit|MultiEdit|NotebookEdit", "hooks": [cmd("backup_before_write.py")]}],
   "Stop": [{"hooks": [cmd("test_before_done.py")]}]}}, indent=2))
 PYS
