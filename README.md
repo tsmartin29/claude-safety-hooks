@@ -1,21 +1,22 @@
 # claude-safety-hooks
 
-Three small [Claude Code hooks](https://docs.claude.com/en/docs/claude-code/hooks) that stop an AI agent from the three mistakes that hurt most: permanently deleting your files, overwriting a file with no way back, and saying "done" without having tried it.
+Small [Claude Code hooks](https://docs.claude.com/en/docs/claude-code/hooks) that stop an AI agent from the mistakes that hurt most: permanently deleting your files, killing everything you own, overwriting a file with no way back, saying "done" without having tried it, and loosening a test to get green.
 
 Made by Tommy Martin. Built while running [ClubPlugins](https://clubplugins.com), where these hooks run on every Claude Code session that builds our plug-ins and apps (20+ at a time, since October 2026).
 
 ## Why it exists
 
-When you run many Claude Code sessions, even a 0.1 % chance of a bad `rm -rf` per session adds up fast, and "I fixed it" without a test run wastes your afternoon. Rules written in a prompt get forgotten; a hook is code the harness runs on every tool call, so it cannot be forgotten. These three are the ones we ended up wanting everywhere.
+When you run many Claude Code sessions, even a 0.1 % chance of a bad `rm -rf` per session adds up fast, and "I fixed it" without a test run wastes your afternoon. Rules written in a prompt get forgotten; a hook is code the harness runs on every tool call, so it cannot be forgotten. These are the ones we ended up wanting everywhere.
 
 | Hook | Event | What it does |
 |---|---|---|
 | `no_delete.py` | PreToolUse (Bash) | Blocks `rm`, `unlink`, `rmdir`, `shred`, `find -delete`, `find -exec rm`, `xargs rm`, `git clean -f`, also inside `bash -c`. Tells Claude: *Move it to ~/.Trash instead (mv <path> ~/.Trash/)*. Deleting is allowed in temp and build areas (`/tmp`, `node_modules`, `build/`, `.venv`, `__pycache__`, `DerivedData`, `*.o`, ... and anything already in `~/.Trash`). `git rm` is not blocked. |
 | `no_mass_kill.py` | PreToolUse (Bash) | Blocks "signal everything I own" commands: `kill -9 -1`, `kill 0`, `pkill -u <you>`, `killall -u`, match-everything patterns like `pkill -f .`, and inline `os.kill(-1, ...)` / `os.killpg(0, ...)` / `process.kill(-1)` run with `python -c` / `node -e` / `perl -e`, also inside `bash -c`. One of those from an agent takes down every other session, the terminal and the desktop ([anthropics/claude-code#104156](https://github.com/anthropics/claude-code/issues/104156)). Killing specific PIDs, or a process group you started (`kill -- -12345`), is allowed. |
+| `no_limit_raise.py` | PreToolUse (Write / Edit / MultiEdit) | Warns when an edit to a test file raises a limit (an upper bound up, a lower bound down) or changes or removes an existing assert. Agents under pressure to get green do this instead of fixing the code: in one session three of mine raised the same page-weight budget. It only warns, to Claude and to you; the edit goes ahead and the normal permission flow is untouched. Tightening a bound, new asserts and new tests stay quiet. |
 | `backup_before_write.py` | PreToolUse (Write / Edit / MultiEdit / NotebookEdit) | If the file exists and matches your protected globs, copies it to `name.YYYY-MM-DD_before_<tool>.bak` first. Only the first change each day is backed up. Never blocks the edit: if the copy fails it warns and carries on. About 30-70 ms. |
 | `test_before_done.py` | Stop | If Claude changed files this turn, claims it is done/fixed/built, and ran nothing that looks like a test or a try-it (test command, build check, browser/simulator tool), it gets one reminder to test like a user. At most once per turn, never loops (honours `stop_hook_active`). |
 
-All three **fail open**: if a hook script itself crashes, the tool call or the stop goes ahead and the error is written to `~/.claude/safety-hooks/errors.log`. A safety hook must never be the reason your session is stuck.
+All of them **fail open**: if a hook script itself crashes, the tool call or the stop goes ahead and the error is written to `~/.claude/safety-hooks/errors.log`. A safety hook must never be the reason your session is stuck.
 
 ## Requirements
 
@@ -25,7 +26,7 @@ macOS or Linux, Python 3.8+ (the `/usr/bin/python3` on macOS is fine), Claude Co
 
 ```bash
 git clone <this repo> claude-safety-hooks && cd claude-safety-hooks
-python3 -W ignore -m unittest discover -s tests -v     # 23 tests, throw-away HOME, touches nothing of yours
+python3 -W ignore -m unittest discover -s tests -v     # 39 tests, throw-away HOME, touches nothing of yours
 ./install.sh --merge-settings                          # copies hooks to ~/.claude/safety-hooks and merges ~/.claude/settings.json
 ```
 
@@ -39,7 +40,8 @@ The snippet it produces:
     "PreToolUse": [
       {"matcher": "Bash", "hooks": [{"type": "command", "command": "/usr/bin/python3 ~/.claude/safety-hooks/no_delete.py"},
                                     {"type": "command", "command": "/usr/bin/python3 ~/.claude/safety-hooks/no_mass_kill.py"}]},
-      {"matcher": "Write|Edit|MultiEdit|NotebookEdit", "hooks": [{"type": "command", "command": "/usr/bin/python3 ~/.claude/safety-hooks/backup_before_write.py"}]}
+      {"matcher": "Write|Edit|MultiEdit|NotebookEdit", "hooks": [{"type": "command", "command": "/usr/bin/python3 ~/.claude/safety-hooks/backup_before_write.py"}]},
+      {"matcher": "Write|Edit|MultiEdit", "hooks": [{"type": "command", "command": "/usr/bin/python3 ~/.claude/safety-hooks/no_limit_raise.py"}]}
     ],
     "Stop": [
       {"hooks": [{"type": "command", "command": "/usr/bin/python3 ~/.claude/safety-hooks/test_before_done.py"}]}
@@ -68,12 +70,13 @@ Patterns are shell-style (`fnmatch`) against the absolute path; `*` also matches
 
 - `no_delete` reads the command text. It handles quotes, `&&`/`;`/pipes, `sudo`/`env`/`nice`, `bash -c '...'`, heredocs, relative paths, `~`, `$HOME`, and `..` tricks. A path with a variable it cannot resolve (`rm -rf $SOMETHING/x`) is blocked. It does **not** catch deletes hidden inside a script, `python -c "shutil.rmtree(...)"`, `rsync --delete`, or `mv x /dev/null`. It is a seatbelt, not a sandbox.
 - `no_mass_kill` reads the command text the same way. It does not see a `kill(-1, ...)` inside a script file the command runs, and it ignores text that only mentions one (heredocs, echo, grep, commit messages); it catches the shell forms and inline `-c`/`-e` code.
+- `no_limit_raise` compares the changed lines. It sees a number changing on a line that otherwise stayed the same, or an assert disappearing. It does not see a limit moved to a config file, a test skipped or deleted by other means, or a bound changed in a Bash command (`sed -i`). For a hard stop at commit time use `tools/test_change_check.py` in [agent-governance](https://github.com/tsmartin29/agent-governance).
 - The Stop reminder is a heuristic on words and commands. It will miss some false "done" claims and will occasionally nudge when you already tested in a way it does not recognise; edit the patterns at the top of `hooks/test_before_done.py` to suit you.
 - Backups are same-folder copies. They are not version control.
 
 ## Files
 
-`hooks/` (three hooks, `common.py`, `config.default.json`) · `install.sh` · `tests/test_hooks.py`
+`hooks/` (the hooks, `common.py`, `config.default.json`) · `install.sh` · `tests/test_hooks.py`
 
 ## Licence
 
