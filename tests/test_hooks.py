@@ -1,4 +1,4 @@
-"""Tests for all three hooks. They run the real scripts as subprocesses, exactly as Claude Code does (JSON on stdin).
+"""Tests for all the hooks. They run the real scripts as subprocesses, exactly as Claude Code does (JSON on stdin).
 Run:  python3 -W ignore -m unittest discover -s tests -v
 Each test uses a throw-away HOME, so nothing on your machine is touched."""
 import glob, json, os, shutil, stat, subprocess, sys, tempfile, time, unittest, datetime
@@ -141,6 +141,52 @@ class NoMassKill(Base):
         r = self.run_hook("no_mass_kill.py", {"tool_name": "Write", "tool_input": {"command": "kill -9 -1"}}); self.assertEqual(r.returncode, 0)
         r = self.run_hook("no_mass_kill.py", None, raw="not json"); self.assertEqual(r.returncode, 0)
 
+class NoLimitRaise(Base):
+    def edit(self, path, old, new, tool="Edit"):
+        ti = {"file_path": path, "old_string": old, "new_string": new}
+        if tool == "MultiEdit": ti = {"file_path": path, "edits": [{"old_string": old, "new_string": new}]}
+        return self.run_hook("no_limit_raise.py", {"tool_name": tool, "tool_input": ti, "cwd": self.home})
+    def assertWarned(self, r, kind):
+        self.assertEqual(r.returncode, 0, r.stderr)                     # warns, never blocks
+        out = json.loads(r.stdout); ctx = out["hookSpecificOutput"]
+        self.assertEqual(ctx["hookEventName"], "PreToolUse"); self.assertIn(kind, ctx["additionalContext"])
+        self.assertNotIn("permissionDecision", ctx)                     # the normal permission flow stays in charge
+    def assertQuiet(self, r): self.assertEqual((r.returncode, r.stdout.strip()), (0, ""))
+
+    def test_raised_limits_warn(self):
+        for old, new in [("assert page_kb <= 300", "assert page_kb <= 450"), ("MAX_LATENCY_MS = 20", "MAX_LATENCY_MS = 35"),
+                         ("self.assertLess(t, 5.0)", "self.assertLess(t, 9.0)"), ("assert accuracy >= 0.95", "assert accuracy >= 0.8"),
+                         ("expect(n).toBeGreaterThan(10)", "expect(n).toBeGreaterThan(3)")]:
+            self.assertWarned(self.edit("tests/test_a.py", old, new), "limit raised")
+    def test_changed_and_removed_asserts_warn(self):
+        self.assertWarned(self.edit("test_a.py", "self.assertEqual(len(r), 4)", "self.assertEqual(len(r), 5)"), "assert changed")
+        self.assertWarned(self.edit("web/a.test.ts", "expect(a).toBe('ok')", ""), "assert removed")
+    def test_tightening_and_new_tests_are_quiet(self):
+        self.assertQuiet(self.edit("tests/test_a.py", "assert kb <= 450", "assert kb <= 300"))
+        self.assertQuiet(self.edit("tests/test_a.py", "assert a >= 0.8", "assert a >= 0.95"))
+        self.assertQuiet(self.edit("tests/test_a.py", "x = run(3)", "x = run(4)"))
+        self.assertQuiet(self.edit("tests/test_a.py", "", "assert new_thing <= 3"))
+    def test_non_test_files_are_quiet(self):
+        self.assertQuiet(self.edit("src/budget.py", "MAX_KB = 300", "MAX_KB = 900"))
+    def test_project_under_a_folder_called_tests(self):              # the folder above the project doesn't make everything a test
+        self.assertQuiet(self.run_hook("no_limit_raise.py", {"tool_name": "Edit", "cwd": self.home + "/tests/proj", "tool_input": {
+            "file_path": self.home + "/tests/proj/src/budget.py", "old_string": "MAX_KB = 300", "new_string": "MAX_KB = 900"}}))
+    def test_multiedit_and_write(self):
+        self.assertWarned(self.edit("tests/test_a.py", "TIMEOUT = 5", "TIMEOUT = 60", tool="MultiEdit"), "limit raised")
+        p = os.path.join(self.home, "tests"); os.makedirs(p); p += "/test_w.py"
+        open(p, "w").write("LIMIT = 10\n")
+        w = lambda c: self.run_hook("no_limit_raise.py", {"tool_name": "Write", "tool_input": {"file_path": p, "content": c}, "cwd": self.home})
+        self.assertWarned(w("LIMIT = 20\n"), "limit raised")
+        self.assertQuiet(w("LIMIT = 5\n"))
+        self.assertQuiet(self.run_hook("no_limit_raise.py", {"tool_name": "Write", "tool_input": {"file_path": p + ".new.py", "content": "x"}}))
+    def test_can_be_disabled_and_fails_open(self):
+        self.write_config({"no_limit_raise": {"enabled": False}})
+        self.assertQuiet(self.edit("tests/test_a.py", "assert t <= 5", "assert t <= 50"))
+        for raw in ("not json", "", "[]"):
+            self.assertEqual(self.run_hook("no_limit_raise.py", None, raw=raw).returncode, 0)
+        r = self.run_hook("no_limit_raise.py", {"tool_name": "Edit", "tool_input": {"file_path": 7, "old_string": 1, "new_string": 2}})
+        self.assertEqual(r.returncode, 0)
+
 class Backup(Base):
     def setUp(self):
         super().setUp()
@@ -261,6 +307,7 @@ class InstallTest(Base):
         r = subprocess.run([ROOT + "/install.sh", "--merge-settings"], env=self.env, capture_output=True, text=True)
         self.assertEqual(len(json.load(open(s))["hooks"]["Stop"]), 2)                    # idempotent
         self.assertTrue(os.path.exists(self.home + "/.claude/safety-hooks/no_delete.py"))
+        self.assertTrue(any("no_limit_raise.py" in h["command"] for g in json.load(open(s))["hooks"]["PreToolUse"] for h in g["hooks"]))
 
 if __name__ == "__main__":
     unittest.main()
